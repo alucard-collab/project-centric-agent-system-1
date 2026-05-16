@@ -330,6 +330,23 @@ async function runTaskChannel(
   convSnapshot = ''
 ) {
   const config = getConfig();
+  const agentsDir = getAgentsDir(config.knowledgeDir);
+
+  // Validate all agents in the plan exist before starting
+  const missingAgents = plan.tasks
+    .map(t => t.agent)
+    .filter((id, i, arr) => arr.indexOf(id) === i)
+    .filter(id => !fs.existsSync(path.join(agentsDir, id, 'junior.md')));
+
+  if (missingAgents.length > 0) {
+    post({
+      type: 'conductorReply',
+      content: `작업을 시작할 수 없습니다. 다음 에이전트가 존재하지 않습니다: **${missingAgents.join(', ')}**\n\nHR 담당자에게 에이전트 생성을 요청하거나, 업무를 다시 지시해 주세요.`,
+      isError: true,
+    });
+    return;
+  }
+
   const channel = sessionManager.createChannel(plan.channelName ?? slugify(plan.brief));
   const storage = new Storage(channel.dir);
 
