@@ -473,9 +473,8 @@ function syncBuiltinAgents(extensionPath: string, agentsDir: string) {
     for (const file of fs.readdirSync(path.join(builtinDir, entry.name))) {
       const dest = path.join(destDir, file);
       try {
-        if (!fs.existsSync(dest)) {
-          fs.copyFileSync(path.join(builtinDir, entry.name, file), dest);
-        }
+        // System agents are always overwritten — user cannot modify them
+        fs.copyFileSync(path.join(builtinDir, entry.name, file), dest);
       } catch { /* 개별 파일 복사 실패는 무시 */ }
     }
   }
