@@ -16,7 +16,7 @@ export class ConductorAgent {
   }
 
   scanSpecialists(): string[] {
-    const excluded = new Set(['conductor', 'hr']);
+    const excluded = new Set(['conductor', 'hr', 'compiler']);
     if (!fs.existsSync(this.agentsDir)) return [];
 
     return fs.readdirSync(this.agentsDir, { withFileTypes: true })

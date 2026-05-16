@@ -457,6 +457,9 @@ async function handleHrChat(message: string, context: vscode.ExtensionContext) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
+// System agents bundled with the extension (never user-created specialists)
+const SYSTEM_AGENTS = new Set(['conductor', 'hr', 'compiler']);
+
 function syncBuiltinAgents(extensionPath: string, agentsDir: string) {
   const builtinDir = path.join(extensionPath, 'agents');
   if (!fs.existsSync(builtinDir)) return;
@@ -464,7 +467,7 @@ function syncBuiltinAgents(extensionPath: string, agentsDir: string) {
   try { fs.mkdirSync(agentsDir, { recursive: true }); } catch { return; }
 
   for (const entry of fs.readdirSync(builtinDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
+    if (!entry.isDirectory() || !SYSTEM_AGENTS.has(entry.name)) continue;
     const destDir = path.join(agentsDir, entry.name);
     try { fs.mkdirSync(destDir, { recursive: true }); } catch { continue; }
     for (const file of fs.readdirSync(path.join(builtinDir, entry.name))) {
