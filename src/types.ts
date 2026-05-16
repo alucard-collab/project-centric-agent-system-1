@@ -69,7 +69,12 @@ export interface ConversationMessage {
 
 export type ConductorResponse =
   | { type: 'message'; content: string }
-  | { type: 'plan'; plan: TaskPlan; summary: string };
+  | { type: 'plan'; plan: TaskPlan; summary: string }
+  | { type: 'hr'; reason: string };
+
+export type HrChatResponse =
+  | { type: 'message'; content: string }
+  | { type: 'done'; agentId: string; displayName: string; summary: string; juniorPrompt: string; seniorPrompt: string };
 
 export interface ChannelStatus {
   channelId: string;

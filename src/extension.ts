@@ -15,6 +15,9 @@ import { PcasPanel } from './webview/panel';
 import { ConversationMessage, TaskPlan } from './types';
 
 let conductorHistory: ConversationMessage[] = [];
+let hrHistory: ConversationMessage[] = [];
+let hrMode = false;
+let hrConductorReason = '';
 let _sessionManager: SessionManager | undefined;
 let _extensionContext: vscode.ExtensionContext | undefined;
 let _knowledgeDb: KnowledgeDB | undefined;
@@ -115,7 +118,11 @@ async function handleMessage(
 
     case 'conductorChat': {
       const { message } = msg as { message: string };
-      await handleConductorChat(message, context, sessionManager);
+      if (hrMode) {
+        await handleHrChat(message, context);
+      } else {
+        await handleConductorChat(message, context, sessionManager);
+      }
       break;
     }
 
@@ -249,17 +256,32 @@ async function handleConductorChat(
       conductorHistory.push({ role: 'assistant', content: response.content });
       post({ type: 'conductorReply', content: response.content });
 
+    } else if (response.type === 'hr') {
+      conductorHistory.push({ role: 'user', content: message });
+      conductorHistory.push({ role: 'assistant', content: `[HR 담당자에게 전달: ${response.reason}]` });
+
+      // Enter HR mode — subsequent user messages go to HR agent
+      hrMode = true;
+      hrHistory = [];
+      hrConductorReason = response.reason;
+
+      const hr = new HrAgent(config, agentsDir);
+      const greeting = await hr.chat(
+        `안녕하세요. Conductor로부터 다음 사유로 안내받았습니다: "${response.reason}"\n사용자가 방금 요청한 내용을 먼저 확인하고 첫 인사와 함께 어떤 도움이 필요한지 물어봐 주세요.`,
+        [],
+        hr.readExistingAgents(),
+        response.reason
+      );
+      hrHistory.push({ role: 'assistant', content: greeting.type === 'message' ? greeting.content : '' });
+      post({ type: 'conductorReply', content: `**[HR 담당자]** ${greeting.type === 'message' ? greeting.content : ''}`, isHr: true });
+
     } else {
-      // plan — HR reviews the plan before execution
+      // plan
       const replyContent =
         `알겠습니다! **#${response.plan.channelName}** 채널을 생성하겠습니다.\n\n${response.summary}`;
       conductorHistory.push({ role: 'user', content: message });
       conductorHistory.push({ role: 'assistant', content: replyContent });
       post({ type: 'conductorReply', content: replyContent, planChannelName: response.plan.channelName });
-
-      // HR reviews agent adequacy for this plan
-      const hrReady = await runHrReview(response.plan, config, conductor, context, agentsDir);
-      if (!hrReady) return;
 
       // Save conversation snapshot to 00_Raw before launching task
       let convSnapshot = '';
@@ -397,44 +419,40 @@ async function runCompiler(
   post({ type: 'conductorReply', content: `✅ Knowledge Wiki 업데이트 완료: **${channelName}**` });
 }
 
-// ── HR review — called after every Conductor plan ─────────────────
-// Returns true if task channel should proceed, false if aborted.
-async function runHrReview(
-  plan: TaskPlan,
-  config: ReturnType<typeof getConfig>,
-  conductor: ConductorAgent,
-  context: vscode.ExtensionContext,
-  agentsDir: string
-): Promise<boolean> {
+// ── HR multi-turn chat ────────────────────────────────────────────
+async function handleHrChat(message: string, context: vscode.ExtensionContext) {
+  const config = getConfig();
+  const agentsDir = getAgentsDir(config.knowledgeDir);
+  const hr = new HrAgent(config, agentsDir);
+
+  post({ type: 'conductorTyping' });
+  hrHistory.push({ role: 'user', content: message });
+
   try {
-    post({ type: 'conductorReply', content: 'HR 에이전트가 작업 계획을 검토하고 있습니다...' });
-    const hr = new HrAgent(config, agentsDir);
-    const result = await hr.reviewPlan(plan, conductor.readExistingAgents());
+    const response = await hr.chat(message, hrHistory, hr.readExistingAgents(), hrConductorReason);
 
-    if (result.action === 'adequate') {
-      post({ type: 'conductorReply', content: `HR 검토 완료: ${result.reason}` });
-      return true;
+    if (response.type === 'message') {
+      hrHistory.push({ role: 'assistant', content: response.content });
+      post({ type: 'conductorReply', content: `**[HR 담당자]** ${response.content}`, isHr: true });
+
+    } else {
+      // done — apply result and exit HR mode
+      hr.applyResult(response);
+      hrMode = false;
+      hrHistory = [];
+
+      post({
+        type: 'conductorReply',
+        content: `**[HR 담당자]** ${response.summary}\n\n에이전트 **${response.displayName}** 준비 완료. 업무를 다시 지시해 주세요.`,
+        isHr: true,
+      });
     }
-
-    // expand or create — confirm with user first
-    const label = result.action === 'expand' ? '역할 확대' : '신규 채용';
-    const agentName = result.action === 'expand' ? result.targetSpecialistId : result.specialistId;
-    const answer = await vscode.window.showInformationMessage(
-      `HR 에이전트: 작업 수행에 필요한 에이전트가 없거나 부족합니다.\n[${label}] ${agentName} — ${result.reason}`,
-      { modal: true },
-      '진행'
-    );
-    if (!answer) {
-      post({ type: 'conductorReply', content: 'HR 보강을 취소했습니다.' });
-      return false;
-    }
-
-    hr.applyResult(result);
-    post({ type: 'conductorReply', content: `HR 완료 [${label}]: ${agentName}. 작업을 시작합니다.` });
-    return true;
   } catch (err) {
-    post({ type: 'conductorReply', content: `HR 검토 오류: ${err instanceof Error ? err.message : String(err)}` });
-    return false;
+    post({
+      type: 'conductorReply',
+      content: `HR 오류: ${err instanceof Error ? err.message : String(err)}`,
+      isError: true,
+    });
   }
 }
 
