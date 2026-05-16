@@ -1,7 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { PcasConfig } from '../types';
+import { PcasConfig, TaskPlan } from '../types';
 import { callLocalLlm } from '../llm';
+
+export interface HrAdequateResult {
+  action: 'adequate';
+  reason: string;
+}
 
 export interface HrCreateResult {
   action: 'create';
@@ -21,7 +26,7 @@ export interface HrExpandResult {
   updatedSeniorPrompt: string;
 }
 
-export type HrResult = HrCreateResult | HrExpandResult;
+export type HrResult = HrAdequateResult | HrCreateResult | HrExpandResult;
 
 export interface ExistingAgent {
   specialistId: string;
@@ -42,6 +47,28 @@ export class HrAgent {
       : FALLBACK_PROMPT;
   }
 
+  async reviewPlan(plan: TaskPlan, existingAgents: ExistingAgent[]): Promise<HrResult> {
+    const agentSection = existingAgents.length > 0
+      ? existingAgents.map(a =>
+          `### ${a.specialistId}\n**Junior 역할:**\n${a.juniorPrompt.slice(0, 300)}...\n\n**Senior 역할:**\n${a.seniorPrompt.slice(0, 200)}...`
+        ).join('\n\n')
+      : '없음';
+
+    const taskSection = plan.tasks.map((t, i) =>
+      `${i + 1}. [${t.agent}] ${t.task}`
+    ).join('\n');
+
+    const userMessage =
+      `## Conductor가 작성한 작업 계획\n**브리프:** ${plan.brief}\n\n**태스크 목록:**\n${taskSection}` +
+      `\n\n## 현재 등록된 에이전트\n${agentSection}`;
+
+    const raw = await callLocalLlm(
+      [{ role: 'system', content: this.systemPrompt }, { role: 'user', content: userMessage }],
+      this.config
+    );
+    return this.parseResult(raw);
+  }
+
   async decide(roleDescription: string, existingAgents: ExistingAgent[]): Promise<HrResult> {
     const existingSection = existingAgents.length > 0
       ? `## 현재 등록된 에이전트\n${existingAgents.map(a =>
@@ -58,7 +85,10 @@ export class HrAgent {
     return this.parseResult(raw);
   }
 
-  applyResult(result: HrResult): { specialistId: string; displayName: string } {
+  applyResult(result: HrResult): { specialistId: string; displayName: string } | null {
+    if (result.action === 'adequate') {
+      return null;
+    }
     if (result.action === 'create') {
       const dir = path.join(this.agentsDir, result.specialistId);
       fs.mkdirSync(dir, { recursive: true });
@@ -79,7 +109,7 @@ export class HrAgent {
       throw new Error(`HR 에이전트가 JSON이 아닌 응답을 반환했습니다:\n${raw}`);
     }
     const parsed = JSON.parse(match[0]) as HrResult;
-    if (parsed.action !== 'create' && parsed.action !== 'expand') {
+    if (parsed.action !== 'adequate' && parsed.action !== 'create' && parsed.action !== 'expand') {
       throw new Error(`HR 에이전트의 action 값이 올바르지 않습니다: ${(parsed as { action: string }).action}`);
     }
     return parsed;

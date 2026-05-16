@@ -249,26 +249,17 @@ async function handleConductorChat(
       conductorHistory.push({ role: 'assistant', content: response.content });
       post({ type: 'conductorReply', content: response.content });
 
-    } else if (response.type === 'hr') {
-      const replyContent = `적합한 에이전트가 없습니다. HR 에이전트가 새 역할을 설계합니다.\n\n> ${response.reason}`;
-      conductorHistory.push({ role: 'user', content: message });
-      conductorHistory.push({ role: 'assistant', content: replyContent });
-      post({ type: 'conductorReply', content: replyContent });
-
-      await runHrFlow(response.reason, config, conductor, context, agentsDir);
-
-      if (conductor.scanSpecialists().length > 0) {
-        post({ type: 'conductorReply', content: '에이전트 준비 완료. 업무를 다시 지시해 주세요.' });
-      } else {
-        post({ type: 'conductorReply', content: 'HR 에이전트가 역할 설계에 실패했습니다.' });
-      }
-
     } else {
+      // plan — HR reviews the plan before execution
       const replyContent =
         `알겠습니다! **#${response.plan.channelName}** 채널을 생성하겠습니다.\n\n${response.summary}`;
       conductorHistory.push({ role: 'user', content: message });
       conductorHistory.push({ role: 'assistant', content: replyContent });
       post({ type: 'conductorReply', content: replyContent, planChannelName: response.plan.channelName });
+
+      // HR reviews agent adequacy for this plan
+      const hrReady = await runHrReview(response.plan, config, conductor, context, agentsDir);
+      if (!hrReady) return;
 
       // Save conversation snapshot to 00_Raw before launching task
       let convSnapshot = '';
@@ -406,30 +397,44 @@ async function runCompiler(
   post({ type: 'conductorReply', content: `✅ Knowledge Wiki 업데이트 완료: **${channelName}**` });
 }
 
-// ── HR flow ───────────────────────────────────────────────────────
-async function runHrFlow(
-  request: string,
+// ── HR review — called after every Conductor plan ─────────────────
+// Returns true if task channel should proceed, false if aborted.
+async function runHrReview(
+  plan: TaskPlan,
   config: ReturnType<typeof getConfig>,
   conductor: ConductorAgent,
   context: vscode.ExtensionContext,
   agentsDir: string
-) {
-  const answer = await vscode.window.showInformationMessage(
-    `적합한 에이전트가 없습니다. HR 에이전트가 새 역할을 설계합니다.\n\n요청: ${request}`,
-    { modal: true },
-    '계속'
-  );
-  if (!answer) return;
-
+): Promise<boolean> {
   try {
-    post({ type: 'conductorReply', content: 'HR 에이전트가 역할을 설계하고 있습니다...' });
+    post({ type: 'conductorReply', content: 'HR 에이전트가 작업 계획을 검토하고 있습니다...' });
     const hr = new HrAgent(config, agentsDir);
-    const result = await hr.decide(request, conductor.readExistingAgents());
-    const applied = hr.applyResult(result);
+    const result = await hr.reviewPlan(plan, conductor.readExistingAgents());
+
+    if (result.action === 'adequate') {
+      post({ type: 'conductorReply', content: `HR 검토 완료: ${result.reason}` });
+      return true;
+    }
+
+    // expand or create — confirm with user first
     const label = result.action === 'expand' ? '역할 확대' : '신규 채용';
-    post({ type: 'conductorReply', content: `HR 완료 [${label}]: ${applied.displayName}. 이제 업무를 다시 지시해주세요.` });
+    const agentName = result.action === 'expand' ? result.targetSpecialistId : result.specialistId;
+    const answer = await vscode.window.showInformationMessage(
+      `HR 에이전트: 작업 수행에 필요한 에이전트가 없거나 부족합니다.\n[${label}] ${agentName} — ${result.reason}`,
+      { modal: true },
+      '진행'
+    );
+    if (!answer) {
+      post({ type: 'conductorReply', content: 'HR 보강을 취소했습니다.' });
+      return false;
+    }
+
+    hr.applyResult(result);
+    post({ type: 'conductorReply', content: `HR 완료 [${label}]: ${agentName}. 작업을 시작합니다.` });
+    return true;
   } catch (err) {
-    post({ type: 'conductorReply', content: `HR 오류: ${err instanceof Error ? err.message : String(err)}` });
+    post({ type: 'conductorReply', content: `HR 검토 오류: ${err instanceof Error ? err.message : String(err)}` });
+    return false;
   }
 }
 

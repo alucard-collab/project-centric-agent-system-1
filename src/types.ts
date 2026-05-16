@@ -69,8 +69,7 @@ export interface ConversationMessage {
 
 export type ConductorResponse =
   | { type: 'message'; content: string }
-  | { type: 'plan'; plan: TaskPlan; summary: string }
-  | { type: 'hr'; reason: string };
+  | { type: 'plan'; plan: TaskPlan; summary: string };
 
 export interface ChannelStatus {
   channelId: string;

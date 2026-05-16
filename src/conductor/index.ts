@@ -112,9 +112,6 @@ export class ConductorAgent {
           summary: parsed.summary ?? parsed.brief ?? '',
         };
       }
-      if (parsed.type === 'hr' && parsed.reason) {
-        return { type: 'hr', reason: parsed.reason };
-      }
       if (parsed.content) {
         return { type: 'message', content: parsed.content };
       }
