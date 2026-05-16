@@ -76,6 +76,15 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 function openMainPanel(context: vscode.ExtensionContext) {
+  // Re-sync system agents every time panel opens — guarantees correct knowledgeDir is used
+  // (activate() may run before VS Code loads workspace settings)
+  const config = getConfig();
+  try {
+    syncBuiltinAgents(context.extensionPath, getAgentsDir(config.knowledgeDir));
+  } catch (e) {
+    console.error('PCAS: syncBuiltinAgents (panel open) failed:', e);
+  }
+
   PcasPanel.createOrShow(
     context.extensionPath,
     msg => handleMessage(msg, context, _sessionManager!)
@@ -245,6 +254,18 @@ async function handleConductorChat(
   const agentsDir = getAgentsDir(config.knowledgeDir);
   const conductor = new ConductorAgent(config, agentsDir);
 
+  // Code-level guard: if no specialists registered, go straight to HR
+  // (don't rely on LLM to follow the "empty list → hr" instruction)
+  if (conductor.scanSpecialists().length === 0) {
+    conductorHistory.push({ role: 'user', content: message });
+    await startHrSession(
+      '등록된 전문 에이전트가 없습니다. 업무를 수행할 에이전트 팀을 먼저 구성해야 합니다.',
+      config,
+      agentsDir
+    );
+    return;
+  }
+
   const statusContext = buildStatusContext(sessionManager);
   post({ type: 'conductorTyping' });
 
@@ -259,21 +280,7 @@ async function handleConductorChat(
     } else if (response.type === 'hr') {
       conductorHistory.push({ role: 'user', content: message });
       conductorHistory.push({ role: 'assistant', content: `[HR 담당자에게 전달: ${response.reason}]` });
-
-      // Enter HR mode — subsequent user messages go to HR agent
-      hrMode = true;
-      hrHistory = [];
-      hrConductorReason = response.reason;
-
-      const hr = new HrAgent(config, agentsDir);
-      const greeting = await hr.chat(
-        `안녕하세요. Conductor로부터 다음 사유로 안내받았습니다: "${response.reason}"\n사용자가 방금 요청한 내용을 먼저 확인하고 첫 인사와 함께 어떤 도움이 필요한지 물어봐 주세요.`,
-        [],
-        hr.readExistingAgents(),
-        response.reason
-      );
-      hrHistory.push({ role: 'assistant', content: greeting.type === 'message' ? greeting.content : '' });
-      post({ type: 'conductorReply', content: `**[HR 담당자]** ${greeting.type === 'message' ? greeting.content : ''}`, isHr: true });
+      await startHrSession(response.reason, config, agentsDir);
 
     } else {
       // plan
@@ -434,6 +441,28 @@ async function runCompiler(
   knowledgeDb.updateWikiIndex(channelName, brief);
 
   post({ type: 'conductorReply', content: `✅ Knowledge Wiki 업데이트 완료: **${channelName}**` });
+}
+
+// ── HR session start (shared by code-level guard and Conductor hr response) ──
+async function startHrSession(reason: string, config: ReturnType<typeof getConfig>, agentsDir: string) {
+  hrMode = true;
+  hrHistory = [];
+  hrConductorReason = reason;
+
+  const hr = new HrAgent(config, agentsDir);
+  try {
+    const greeting = await hr.chat(
+      `Conductor로부터 다음 사유로 안내받았습니다: "${reason}"\n첫 인사와 함께 사용자에게 어떤 도움이 필요한지 물어봐 주세요.`,
+      [],
+      hr.readExistingAgents(),
+      reason
+    );
+    const content = greeting.type === 'message' ? greeting.content : '';
+    hrHistory.push({ role: 'assistant', content });
+    post({ type: 'conductorReply', content: `**[HR 담당자]** ${content}`, isHr: true });
+  } catch (err) {
+    post({ type: 'conductorReply', content: `HR 시작 오류: ${err instanceof Error ? err.message : String(err)}`, isError: true });
+  }
 }
 
 // ── HR multi-turn chat ────────────────────────────────────────────
